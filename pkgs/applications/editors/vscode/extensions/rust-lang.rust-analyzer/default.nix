@@ -20,32 +20,53 @@ let
   # Use the plugin version as in vscode marketplace, updated by update script.
   inherit (vsix) version;
 
-  releaseTag = "2025-02-17";
+  releaseTag = "2025-08-25";
 
   src = fetchFromGitHub {
     owner = "rust-lang";
     repo = "rust-analyzer";
     rev = releaseTag;
-    hash = "sha256-i76MMFSkCr4kDwurK8CACwZq7qEgVEgIzkOr2kiuAKk=";
+    hash = "sha256-apbJj2tsJkL2l+7Or9tJm1Mt5QPB6w/zIyDkCx8pfvk=";
   };
 
   vsix = buildNpmPackage {
     inherit pname releaseTag;
     version = lib.trim (lib.readFile ./version.txt);
     src = "${src}/editors/code";
-    npmDepsHash = "sha256-0frOGphtzO6z8neSEYfjyRYrM6zEO3wId/TACblZkxM=";
-    buildInputs = [
-      pkgsBuildBuild.libsecret
-    ];
+
+    npmDepsHash = "sha256-fV4Z3jj+v56A7wbIEYhVAPVuAMqMds5xSe3OetWAsbw=";
+
+    buildInputs = [ pkgsBuildBuild.libsecret ];
     nativeBuildInputs = [
       jq
       moreutils
       esbuild
-      # Required by `keytar`, which is a dependency of `vsce`.
       pkg-config
     ];
 
-    # Follows https://github.com/rust-lang/rust-analyzer/blob/41949748a6123fd6061eb984a47f4fe780525e63/xtask/src/dist.rs#L39-L65
+    # Skip esbuild’s installer, and point to Nix’s esbuild and fake version (no breaking changes)
+    # If we don't do this esbuild will fail due to version mismatch.
+    npmFlags = [ "--ignore-scripts" ];
+    ESBUILD_SKIP_DOWNLOAD = "1";
+    ESBUILD_SKIP_BINARY_INSTALL = "1";
+
+    # Make the esbuild wrapper available *before* npmConfigHook runs
+    preConfigure = ''
+            WRAP="$PWD/esbuild-wrapper"
+            cat > "$WRAP" <<'EOF'
+
+            #! /bin/sh
+            if [ "$1" = "--version" ]; then
+              echo 0.25.0
+              exit 0
+            fi
+            exec '${esbuild}/bin/esbuild' "$@"
+            EOF
+            
+            chmod +x "$WRAP"
+            export ESBUILD_BINARY_PATH="$WRAP"
+    '';
+
     installPhase = ''
       jq '
         .version = $ENV.version |
@@ -55,7 +76,10 @@ let
       ' package.json | sponge package.json
 
       mkdir -p $out
-      npx vsce package -o $out/${pname}.zip
+
+      # Avoid non-exec .bin symlink; call the CLI with node directly.
+      # patchShebangs already pointed node to the Nix node, so plain `node` works.
+      node node_modules/@vscode/vsce/vsce package -o $out/${pname}.zip
     '';
   };
 
